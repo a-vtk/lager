@@ -3,12 +3,12 @@
 %% compliance with the License. You should have received a copy of the
 %% Erlang Public License along with your Erlang distribution. If not, it can be
 %% retrieved via the world wide web at http://www.erlang.org/.
-%% 
+%%
 %% Software distributed under the License is distributed on an "AS IS"
 %% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
 %% the License for the specific language governing rights and limitations
 %% under the License.
-%% 
+%%
 %% The Initial Developer of the Original Code is Corelatus AB.
 %% Portions created by Corelatus are Copyright 2003, Corelatus
 %% AB. All Rights Reserved.''
@@ -32,7 +32,7 @@
 
 -module(lager_trunc_io).
 -author('matthias@corelatus.se').
-%% And thanks to Chris Newcombe for a bug fix 
+%% And thanks to Chris Newcombe for a bug fix
 -export([format/3, format/4, print/2, print/3, fprint/2, fprint/3, safe/2]). % interface functions
 -version("$Id: trunc_io.erl,v 1.11 2009-02-23 12:01:06 matthias Exp $").
 
@@ -76,11 +76,11 @@ fprint(Term, Max) ->
 %% @doc Returns an flattened list containing the ASCII representation of the given
 %% term.
 -spec fprint(term(), pos_integer(), options()) -> string().
-fprint(T, Max, Options) -> 
+fprint(T, Max, Options) ->
     {L, _} = print(T, Max, prepare_options(Options, #print_options{})),
     lists:flatten(L).
 
-%% @doc Same as print, but never crashes. 
+%% @doc Same as print, but never crashes.
 %%
 %% This is a tradeoff. Print might conceivably crash if it's asked to
 %% print something it doesn't understand, for example some new data
@@ -88,7 +88,7 @@ fprint(T, Max, Options) ->
 %% to io_lib to format the term, but then the formatting is
 %% depth-limited instead of length limited, so you might run out
 %% memory printing it. Out of the frying pan and into the fire.
-%% 
+%%
 -spec safe(term(), pos_integer()) -> {string(), pos_integer()} | {string()}.
 safe(What, Len) ->
     case catch print(What, Len) of
@@ -107,15 +107,15 @@ print(Term, Max, Options) when is_list(Options) ->
     %% need to convert the proplist to a record
     print(Term, Max, prepare_options(Options, #print_options{}));
 
-print(Term, _Max, #print_options{force_strings=true}) when not is_list(Term), not is_binary(Term), not is_atom(Term) ->
+print(Term, _Max, #print_options{force_strings=true, lists_as_strings = LAS}) when not LAS,  not is_list(Term), not is_binary(Term), not is_atom(Term) ->
     erlang:error(badarg);
 
 print(_, Max, _Options) when Max < 0 -> {"...", 3};
 print(_, _, #print_options{depth=0}) -> {"...", 3};
 
 
-%% @doc We assume atoms, floats, funs, integers, PIDs, ports and refs never need 
-%% to be truncated. This isn't strictly true, someone could make an 
+%% @doc We assume atoms, floats, funs, integers, PIDs, ports and refs never need
+%% to be truncated. This isn't strictly true, someone could make an
 %% arbitrarily long bignum. Let's assume that won't happen unless someone
 %% is being malicious.
 %%
@@ -144,8 +144,13 @@ print(Binary, 0, _Options) when is_bitstring(Binary) ->
 
 print(Bin, Max, _Options) when is_binary(Bin), Max < 2 ->
     {"<<...>>", 7};
-print(Binary, Max, Options) when is_binary(Binary) ->
-    B = binary_to_list(Binary, 1, lists:min([Max, byte_size(Binary)])),
+print(Binary, Max, OldOptions) when is_binary(Binary) ->
+    {B,Options} = try
+                      {lager_format:cdata_to_chars(Binary),OldOptions}
+    catch
+        _:_  -> {binary_to_list(Binary, 1, lists:min([Max, byte_size(Binary)])),OldOptions}
+    end ,
+%%    B = binary_to_list(Binary, 1, lists:min([Max, byte_size(Binary)])),
     {Res, Length} = case Options#print_options.lists_as_strings orelse
         Options#print_options.force_strings of
         true ->
@@ -214,15 +219,15 @@ print({inline_bitstring, B}, _Max, _Options) when is_bitstring(B) ->
     SizeStr = integer_to_list(Size),
     {[ValueStr, $:, SizeStr], length(ValueStr) + length(SizeStr) +1};
 print(BitString, Max, Options) when is_bitstring(BitString) ->
-    case byte_size(BitString) > Max of
+    BL = case byte_size(BitString) > Max of
         true ->
-            BL = binary_to_list(BitString, 1, Max);
+            binary_to_list(BitString, 1, Max);
         _ ->
             R = erlang:bitstring_to_list(BitString),
             {Bytes, [Bits]} = lists:splitwith(fun erlang:is_integer/1, R),
             %% tag the trailing bits with a special tuple we catch when
             %% list_body calls print again
-            BL = Bytes ++ [{inline_bitstring, Bits}]
+            Bytes ++ [{inline_bitstring, Bits}]
     end,
     {X, Len0} = list_body(BL, Max - 4, dec_depth(Options), true),
     {["<<", X, ">>"], Len0 + 4};
@@ -265,7 +270,7 @@ print({'$lager_record', Name, Fields}, Max, Options) ->
     {RC, Len} = record_fields(Fields, Max - length(Leader) + 1, dec_depth(Options)),
     {[Leader, RC, "}"], Len + length(Leader) + 1};
 
-print(Tuple, Max, Options) when is_tuple(Tuple) -> 
+print(Tuple, Max, Options) when is_tuple(Tuple) ->
     {TC, Len} = tuple_contents(Tuple, Max-2, Options),
     {[${, TC, $}], Len + 2};
 
@@ -273,7 +278,14 @@ print(List, Max, Options) when is_list(List) ->
     case Options#print_options.lists_as_strings orelse
         Options#print_options.force_strings of
         true ->
-            alist_start(List, Max, dec_depth(Options));
+            try
+                alist_start(List, Max, dec_depth(Options))
+            catch
+                _:_  ->
+                    {R, Len} = list_body(List, Max - 2, dec_depth(Options), false),
+                    {[$[, R, $]], Len + 2}
+            end ;
+
         _ ->
             {R, Len} = list_body(List, Max - 2, dec_depth(Options), false),
             {[$[, R, $]], Len + 2}
@@ -307,7 +319,7 @@ list_body([H|_], Max, Options=#print_options{depth=1}, Tuple) ->
         false -> $|
     end,
     {[List ++ [Sep | "..."]], Len + 4};
-list_body([H|T], Max, Options, Tuple) -> 
+list_body([H|T], Max, Options, Tuple) ->
     {List, Len} = print(H, Max, Options),
     {Final, FLen} = list_bodyc(T, Max - Len, Options, Tuple),
     {[List|Final], FLen + Len};
@@ -319,7 +331,7 @@ list_bodyc([], _Max, _Options, _Tuple) -> {[], 0};
 list_bodyc(_, Max, _Options, _Tuple) when Max < 5 -> {",...", 4};
 list_bodyc(_, _Max, #print_options{depth=1}, true) -> {",...", 4};
 list_bodyc(_, _Max, #print_options{depth=1}, false) -> {"|...", 4};
-list_bodyc([H|T], Max, #print_options{depth=Depth} = Options, Tuple) -> 
+list_bodyc([H|T], Max, #print_options{depth=Depth} = Options, Tuple) ->
     {List, Len} = print(H, Max, dec_depth(Options)),
     {Final, FLen} = list_bodyc(T, Max - Len - 1, dec_depth(Options), Tuple),
     Sep = case Depth == 1 andalso not Tuple of
@@ -553,7 +565,7 @@ perf(M, F, Reps) when Reps > 0 ->
     test(M,F),
     perf(M,F,Reps-1);
 perf(_,_,_) ->
-    done.    
+    done.
 
 %% Performance test. Needs a particularly large term I saved as a binary...
 -spec perf1() -> {non_neg_integer(), non_neg_integer()}.
@@ -570,7 +582,7 @@ format_test() ->
     ?assertEqual("[\"foo\",98,97,114]", lists:flatten(format("~p", [["foo", $b, $a, $r]], 50))),
     ?assertEqual("[\"foo\",98,97,114]", lists:flatten(format("~P", [["foo", $b, $a, $r], 10], 50))),
     ?assertEqual("[[102,111,111],98,97,114]", lists:flatten(format("~w", [["foo", $b, $a, $r]], 50))),
-    
+
     %% complex ones
     ?assertEqual("    foobar", lists:flatten(format("~10s", [["foo", $b, $a, $r]], 50))),
     ?assertEqual("f", lists:flatten(format("~1s", [["foo", $b, $a, $r]], 50))),
@@ -666,6 +678,7 @@ bitstring_printing_test() ->
 
 list_printing_test() ->
     ?assertEqual("[]", lists:flatten(format("~p", [[]], 50))),
+    ?assertEqual("[{}]", lists:flatten(format("~tp", [[{}]], 50))),
     ?assertEqual("[]", lists:flatten(format("~w", [[]], 50))),
     ?assertEqual("", lists:flatten(format("~s", [[]], 50))),
     ?assertEqual("...", lists:flatten(format("~s", [[]], -1))),
@@ -777,6 +790,7 @@ map_printing_test() ->
                          lists:flatten(format("~w", [
                                                      maps:from_list([{22835963083295358096932575511191922182123945984,
                                                        bar}])], 54))),
+            ?assertEqual("#{bar => карамба}", lists:flatten(format("~tp", [maps:from_list([{bar, "карамба"}])], 100))),
             ok;
         false ->
             ok
@@ -785,6 +799,7 @@ map_printing_test() ->
 unicode_test() ->
     ?assertEqual([231,167,129], lists:flatten(format("~s", [<<231,167,129>>], 50))),
     ?assertEqual([31169], lists:flatten(format("~ts", [<<231,167,129>>], 50))),
+    ?assertEqual([31169], lists:flatten(format("~tp", [<<231,167,129>>], 50))),
     ok.
 
 depth_limit_test() ->
@@ -836,7 +851,7 @@ depth_limit_test() ->
     ?assertEqual("[1|...]", lists:flatten(format("~P", [[1, 2, 3], 2], 50))),
     ?assertEqual("[1,2|...]", lists:flatten(format("~P", [[1, 2, 3], 3], 50))),
     ?assertEqual("[1,2,3]", lists:flatten(format("~P", [[1, 2, 3], 4], 50))),
-    
+
     ?assertEqual("{1,...}", lists:flatten(format("~P", [{1, 2, 3}, 2], 50))),
     ?assertEqual("{1,2,...}", lists:flatten(format("~P", [{1, 2, 3}, 3], 50))),
     ?assertEqual("{1,2,3}", lists:flatten(format("~P", [{1, 2, 3}, 4], 50))),
@@ -845,13 +860,13 @@ depth_limit_test() ->
     ?assertEqual("[1,2|...]", lists:flatten(format("~P", [[1, 2, <<3>>], 3], 50))),
     ?assertEqual("[1,2,<<...>>]", lists:flatten(format("~P", [[1, 2, <<3>>], 4], 50))),
     ?assertEqual("[1,2,<<3>>]", lists:flatten(format("~P", [[1, 2, <<3>>], 5], 50))),
-    
+
     ?assertEqual("<<...>>", lists:flatten(format("~P", [<<0, 0, 0, 0>>, 1], 50))),
     ?assertEqual("<<0,...>>", lists:flatten(format("~P", [<<0, 0, 0, 0>>, 2], 50))),
     ?assertEqual("<<0,0,...>>", lists:flatten(format("~P", [<<0, 0, 0, 0>>, 3], 50))),
     ?assertEqual("<<0,0,0,...>>", lists:flatten(format("~P", [<<0, 0, 0, 0>>, 4], 50))),
     ?assertEqual("<<0,0,0,0>>", lists:flatten(format("~P", [<<0, 0, 0, 0>>, 5], 50))),
-    
+
     %% this is a seriously weird edge case
     ?assertEqual("<<\"   \"...>>", lists:flatten(format("~P", [<<32, 32, 32, 0>>, 2], 50))),
     ?assertEqual("<<\"   \"...>>", lists:flatten(format("~P", [<<32, 32, 32, 0>>, 3], 50))),
@@ -880,6 +895,12 @@ print_terms_without_format_string_test() ->
     ?assertEqual("hello", lists:flatten(format('hello', [], 50))),
     ?assertError(badarg, format(<<1, 2, 3, 1:7>>, [], 100)),
     ?assertError(badarg, format(65535, [], 50)),
+    ok.
+
+improper_io_list_test() ->
+    ?assertEqual(">hello", lists:flatten(format('~s', [[$>|<<"hello">>]], 50))),
+    ?assertEqual(">hello", lists:flatten(format('~ts', [[$>|<<"hello">>]], 50))),
+    ?assertEqual("helloworld", lists:flatten(format('~ts', [[<<"hello">>|<<"world">>]], 50))),
     ok.
 
 -endif.
